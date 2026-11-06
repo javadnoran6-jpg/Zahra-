@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "instagram_packages": ["com.instagram.android", "com.instagram.lite"],
+  "auto_chain": ["masque_h3", "masque_h2", "masque_h2_frag", "gool", "wireguard"],
+  "profiles": [
+    {
+      "id": "psiphon_de",
+      "name": "آلمان (Psiphon)",
+      "flag": "🇩🇪",
+      "desc": "خروجی آلمان — آزمایشی",
+      "args": ["--psiphon-only", "--psiphon-region", "DE"],
+      "timeout_ms": 90000,
+      "experimental": true
+    },
+    {
+      "id": "psiphon_us",
+      "name": "آمریکا (Psiphon)",
+      "flag": "🇺🇸",
+      "desc": "خروجی آمریکا — آزمایشی",
+      "args": ["--psiphon-only", "--psiphon-region", "US"],
+      "timeout_ms": 90000,
+      "experimental": true
+    },
+    {
+      "id": "psiphon_nl",
+      "name": "هلند (Psiphon)",
+      "flag": "🇳🇱",
+      "desc": "خروجی هلند — آزمایشی",
+      "args": ["--psiphon-only", "--psiphon-region", "NL"],
+      "timeout_ms": 90000,
+      "experimental": true
+    },
+    {
+      "id": "psiphon_gb",
+      "name": "انگلیس (Psiphon)",
+      "flag": "🇬🇧",
+      "desc": "خروجی انگلیس — آزمایشی",
+      "args": ["--psiphon-only", "--psiphon-region", "GB"],
+      "timeout_ms": 90000,
+      "experimental": true
+    }
+  ]
+}

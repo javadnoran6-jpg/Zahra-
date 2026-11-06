@@ -1,0 +1,138 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  # Official Aether release that contains aether-android-{arm64,armv7,x86_64}.tar.gz
+  AETHER_VERSION: v2.3.0
+  # hev-socks5-tunnel git ref. Empty = default branch. Pin to a tag for reproducible builds.
+  HEV_REF: ""
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Setup NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+
+      # ---------------------------------------------------------------- Aether core
+      - name: Download Aether core (verified with SHA-256)
+        run: |
+          set -euo pipefail
+          base="https://github.com/CluvexStudio/Aether/releases/download/${AETHER_VERSION}"
+          mkdir -p dl app/src/main/jniLibs app/src/main/assets
+          : > app/src/main/assets/pt_manifest.txt
+          declare -A ABI=( [arm64]=arm64-v8a [armv7]=armeabi-v7a [x86_64]=x86_64 )
+          first=1
+          for k in arm64 armv7 x86_64; do
+            abi="${ABI[$k]}"
+            f="aether-android-${k}.tar.gz"
+            curl -fsSL -o "dl/$f" "$base/$f"
+            curl -fsSL -o "dl/$f.sha256" "$base/$f.sha256"
+            (cd dl && sha256sum -c "$f.sha256")
+            mkdir -p "dl/$k" "app/src/main/jniLibs/$abi"
+            tar -xzf "dl/$f" -C "dl/$k"
+            bin="$(find "dl/$k" -type f -name aether | head -n1)"
+            test -n "$bin"
+            cp "$bin" "app/src/main/jniLibs/$abi/libaether.so"
+            # Pluggable transports (Psiphon/Tor helpers) -> libpt_N.so + manifest
+            ptdir="$(find "dl/$k" -type d -name pt | head -n1 || true)"
+            if [ -n "$ptdir" ]; then
+              i=0
+              while IFS= read -r p; do
+                rel="${p#$ptdir/}"
+                cp "$p" "app/src/main/jniLibs/$abi/libpt_${i}.so"
+                if [ "$first" = "1" ]; then echo "libpt_${i}.so=${rel}" >> app/src/main/assets/pt_manifest.txt; fi
+                i=$((i+1))
+              done < <(find "$ptdir" -type f | sort)
+            fi
+            first=0
+          done
+          echo "--- pt manifest"; cat app/src/main/assets/pt_manifest.txt || true
+          ls -la app/src/main/jniLibs/*
+
+      # ---------------------------------------------------------------- hev-socks5-tunnel (TUN -> SOCKS5)
+      - name: Build hev-socks5-tunnel
+        run: |
+          set -euo pipefail
+          mkdir -p native/jni
+          if [ -n "$HEV_REF" ]; then BR="--branch $HEV_REF"; else BR=""; fi
+          git clone --recursive --depth 1 --shallow-submodules $BR \
+            https://github.com/heiher/hev-socks5-tunnel native/jni/hev-socks5-tunnel
+          printf 'include $(call all-subdir-makefiles)\n' > native/jni/Android.mk
+          printf 'APP_ABI := arm64-v8a armeabi-v7a x86_64\nAPP_PLATFORM := android-26\n' > native/jni/Application.mk
+          MK=native/jni/hev-socks5-tunnel/Android.mk
+          # The Java class is hev.htproxy.TProxyService, make sure the native side agrees.
+          if grep -q 'DPKGNAME' "$MK"; then
+            sed -i -E 's#-DPKGNAME=[^ ]+#-DPKGNAME=hev/htproxy#; s#-DCLSNAME=[^ ]+#-DCLSNAME=TProxyService#' "$MK"
+          else
+            echo 'APP_CFLAGS += -DPKGNAME=hev/htproxy -DCLSNAME=TProxyService' >> native/jni/Application.mk
+          fi
+          "${{ steps.ndk.outputs.ndk-path }}/ndk-build" -C native -j"$(nproc)"
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "native/libs/$abi/libhev-socks5-tunnel.so" "app/src/main/jniLibs/$abi/"
+          done
+          ls -la app/src/main/jniLibs/*
+
+      # ---------------------------------------------------------------- signing
+      - name: Prepare signing key
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS_SECRET: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS_SECRET: ${{ secrets.KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "KS_PASS=$KS_PASS_SECRET" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=$KEY_ALIAS_SECRET" >> "$GITHUB_ENV"
+          else
+            echo "No KEYSTORE_BASE64 secret: generating a throw-away key (updates over an older build will need uninstall first)."
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.jks" -alias zahra \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass zahravpn123 -keypass zahravpn123 \
+              -dname "CN=ZahraVPN, O=ZahraVPN, C=IR"
+            echo "KS_PASS=zahravpn123" >> "$GITHUB_ENV"
+            echo "KEY_ALIAS=zahra" >> "$GITHUB_ENV"
+          fi
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+
+      # ---------------------------------------------------------------- APK
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build release APKs
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZahraVPN-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Publish GitHub release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/release/*.apk

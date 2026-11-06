@@ -1,0 +1,8 @@
+.gradle/
+build/
+local.properties
+*.jks
+dl/
+native/
+app/src/main/jniLibs/
+app/src/main/assets/pt_manifest.txt
